@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: dash-file-uploader
+    runtime: python
+    plan: starter             # persistent disks require a paid plan
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:server
+    # region: singapore       # optional; pick closest region if you like
+    envVars:
+      - key: TARGET_REPO      # e.g. your-user/your-repo
+        value: your-user/your-repo
+      - key: TARGET_BRANCH
+        value: main
+      - key: GITHUB_BASEDIR
+        value: uploads
+      - key: GITHUB_TOKEN     # secret; Render will prompt you during first deploy
+        sync: false
+      - key: DISK_ROOT
+        value: /var/data
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 5               # adjust as needed
