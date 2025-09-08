@@ -7,8 +7,8 @@ services:
     startCommand: gunicorn app:server
     # region: singapore       # optional; pick closest region if you like
     envVars:
-      - key: TARGET_REPO      # e.g. your-user/your-repo
-        value: your-user/your-repo
+      - key: TARGET_REPO
+        value: atchison2024/TEST
       - key: TARGET_BRANCH
         value: main
       - key: GITHUB_BASEDIR
