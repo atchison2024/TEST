@@ -1,155 +1,138 @@
-import os
-import base64
-import pathlib
-import json
+import os, re, base64, time, json, requests
 from datetime import datetime
+from dash import Dash, dcc, html, Input, Output, State, no_update
 
-import requests
-from dotenv import load_dotenv
-from dash import Dash, html, dcc, Input, Output, State
+# --- Config via env vars ---
+DISK_ROOT         = os.getenv("DISK_ROOT", "/var/data")             # must match render.yaml mountPath
+TARGET_REPO       = os.getenv("TARGET_REPO")                         # e.g. "your-user/your-repo"
+TARGET_BRANCH     = os.getenv("TARGET_BRANCH", "main")
+GITHUB_BASEDIR    = os.getenv("GITHUB_BASEDIR", "uploads")           # path inside the repo
+GITHUB_TOKEN      = os.getenv("GITHUB_TOKEN")                        # PAT with repo/public_repo scope
+GITHUB_API        = "https://api.github.com"
+MAX_BYTES         = 95 * 1024 * 1024                                 # stay below GitHub's 100 MB per-file API limit
 
-# Load environment variables from .env (optional but convenient)
-load_dotenv()
+os.makedirs(os.path.join(DISK_ROOT, GITHUB_BASEDIR), exist_ok=True)
 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO")            # e.g. "YourOrg/your-repo"
-GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
-GITHUB_PATH_PREFIX = os.getenv("GITHUB_PATH", "uploads")  # subfolder in repo
+def _safe_filename(name: str) -> str:
+    name = name.strip().replace("\\", "/").split("/")[-1]
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:200] or f"file_{int(time.time())}"
 
-# Basic safety checks
-if not GITHUB_TOKEN or not GITHUB_REPO:
-    raise RuntimeError("Please set GITHUB_TOKEN and GITHUB_REPO in your environment or .env file.")
+def _github_headers():
+    return {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "dash-uploader"
+    }
 
-# Local storage folder
-LOCAL_UPLOAD_DIR = pathlib.Path("uploads")
-LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+def _github_upsert(path_in_repo: str, content_bytes: bytes, commit_message: str):
+    """Create or update a file via GitHub Contents API."""
+    if not (GITHUB_TOKEN and TARGET_REPO):
+        return False, "Server missing TARGET_REPO or GITHUB_TOKEN."
 
-# GitHub REST API headers
-GITHUB_API = "https://api.github.com"
-GH_HEADERS = {
-    "Accept": "application/vnd.github+json",
-    "Authorization": f"Bearer {GITHUB_TOKEN}",
-    "X-GitHub-Api-Version": "2022-11-28",
-}
+    if len(content_bytes) > MAX_BYTES:
+        return False, f"File too large for direct API upload (> ~100 MB). Use Git LFS for big binaries."
 
-def _github_get_file_sha(path_in_repo: str):
-    """Return the current SHA of the file in GitHub if it exists, else None."""
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path_in_repo}"
-    params = {"ref": GITHUB_BRANCH}
-    r = requests.get(url, headers=GH_HEADERS, params=params)
-    if r.status_code == 200:
-        return r.json()["sha"]
-    if r.status_code == 404:
-        return None
-    r.raise_for_status()
+    url = f"{GITHUB_API}/repos/{TARGET_REPO}/contents/{path_in_repo}"
+    sha = None
 
-def push_file_to_github(filename: str, file_bytes: bytes) -> dict:
-    """
-    Create or update a file in the GitHub repo.
-    Returns a dict with 'status', 'path', and optionally 'commit_url' or 'error'.
-    """
-    path_in_repo = f"{GITHUB_PATH_PREFIX.strip('/')}/{filename}"
-    sha = _github_get_file_sha(path_in_repo)
-
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path_in_repo}"
-    b64_content = base64.b64encode(file_bytes).decode("utf-8")
+    # Check if file exists to obtain SHA (required for updates)
+    r_get = requests.get(url, headers=_github_headers(), params={"ref": TARGET_BRANCH})
+    if r_get.status_code == 200:
+        try:
+            sha = r_get.json().get("sha")
+        except Exception:
+            pass
 
     payload = {
-        "message": f"Add/update via Dash: {filename}",
-        "content": b64_content,
-        "branch": GITHUB_BRANCH,
+        "message": commit_message,
+        "branch": TARGET_BRANCH,
+        "content": base64.b64encode(content_bytes).decode("utf-8"),
     }
     if sha:
-        payload["sha"] = sha  # required for updates
+        payload["sha"] = sha
 
-    r = requests.put(url, headers=GH_HEADERS, json=payload)
-    if r.status_code in (201, 200):  # created or updated
-        data = r.json()
-        commit_url = data.get("commit", {}).get("html_url")
-        return {"status": "ok", "path": path_in_repo, "commit_url": commit_url}
+    r_put = requests.put(url, headers=_github_headers(), data=json.dumps(payload))
+    if r_put.status_code in (200, 201):
+        j = r_put.json()
+        blob_url = j.get("content", {}).get("html_url") or f"https://github.com/{TARGET_REPO}/blob/{TARGET_BRANCH}/{path_in_repo}"
+        return True, blob_url
     else:
-        return {"status": "error", "path": path_in_repo, "error": r.text, "code": r.status_code}
+        try:
+            j = r_put.json()
+            err = j.get("message", str(j))
+        except Exception:
+            err = r_put.text
+        return False, f"GitHub API error: {err}"
 
-def save_locally(filename: str, file_bytes: bytes) -> pathlib.Path:
-    """Save to local uploads directory and return the path."""
-    safe_name = pathlib.Path(filename).name
-    local_path = LOCAL_UPLOAD_DIR / safe_name
-    with open(local_path, "wb") as f:
-        f.write(file_bytes)
-    return local_path
+app = Dash(__name__, suppress_callback_exceptions=True)
+server = app.server  # for gunicorn
 
-def decode_upload(content: str) -> bytes:
-    """Dash dcc.Upload supplies a 'data:' URL base64 string. We need the bytes."""
-    # contents looks like "data:<mimetype>;base64,<base64-blob>"
-    base64_str = content.split(",", 1)[1]
-    return base64.b64decode(base64_str)
-
-# ---- Dash app ----
-app = Dash(__name__)
-app.title = "Simple Upload to GitHub"
-
-app.layout = html.Div(
-    style={"maxWidth": 680, "margin": "40px auto", "fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial"},
-    children=[
-        html.H2("Upload files → store locally → push to GitHub"),
-        dcc.Upload(
-            id="upload",
-            multiple=True,
-            max_size=-1,  # no size cap at Dash component level
-            children=html.Div(["Drag and drop or ", html.A("select files")],
-                              style={"padding": "40px", "border": "2px dashed #ccc", "borderRadius": "8px"}),
-        ),
-        html.Div(id="status", style={"marginTop": "24px", "whiteSpace": "pre-wrap", "fontSize": "14px"}),
-        html.Hr(),
-        html.Div(id="meta", style={"fontSize": "12px", "color": "#555"})
-    ],
-)
+app.layout = html.Div(style={"fontFamily": "system-ui", "maxWidth": 720, "margin": "40px auto"}, children=[
+    html.H2("Upload → store on Render → commit to GitHub"),
+    dcc.Upload(
+        id="uploader",
+        children=html.Div(["Drag & drop files here or ", html.A("select")]),
+        multiple=True,
+        style={"width": "100%", "padding": "40px", "borderWidth": "2px", "borderStyle": "dashed", "textAlign": "center"}
+    ),
+    html.Div(id="results", style={"marginTop": "24px", "lineHeight": "1.6"})
+])
 
 @app.callback(
-    Output("status", "children"),
-    Output("meta", "children"),
-    Input("upload", "contents"),
-    State("upload", "filename"),
+    Output("results", "children"),
+    Input("uploader", "contents"),
+    State("uploader", "filename"),
     prevent_initial_call=True
 )
-def handle_upload(contents_list, filenames):
-    if not contents_list:
-        return "No files received.", ""
+def handle_upload(list_of_contents, list_of_names):
+    if not list_of_contents:
+        return no_update
 
-    lines = []
-    meta_records = []
-    now = datetime.utcnow().isoformat() + "Z"
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    out = []
 
-    for contents, filename in zip(contents_list, filenames):
+    for content, name in zip(list_of_contents, list_of_names):
         try:
-            file_bytes = decode_upload(contents)
-            local_path = save_locally(filename, file_bytes)
-            result = push_file_to_github(filename, file_bytes)
+            safe = _safe_filename(name or f"file_{int(time.time())}")
+            b64 = content.split(",", 1)[1]
+            data = base64.b64decode(b64)
 
-            if result["status"] == "ok":
-                lines.append(f"✓ {filename} → {result['path']} (committed)")
+            # 1) Save to persistent disk (only under the mounted path persists across deploys)
+            local_rel = f"{GITHUB_BASEDIR}/{timestamp}_{safe}"
+            local_abs = os.path.join(DISK_ROOT, local_rel)
+            os.makedirs(os.path.dirname(local_abs), exist_ok=True)
+            with open(local_abs, "wb") as f:
+                f.write(data)
+
+            # 2) Commit to GitHub
+            repo_path = local_rel  # reuse same structure in the repo
+            ok, link_or_err = _github_upsert(
+                path_in_repo=repo_path,
+                content_bytes=data,
+                commit_message=f"Add via Dash uploader: {safe}"
+            )
+            if ok:
+                out.append(html.Div([
+                    html.Strong(safe),
+                    html.Span(" — saved and committed: "),
+                    html.A("open on GitHub", href=link_or_err, target="_blank")
+                ]))
             else:
-                lines.append(f"✗ {filename} → {result['path']} (error {result.get('code')}): {result.get('error')}")
+                out.append(html.Div([
+                    html.Strong(safe),
+                    html.Span(" — saved locally, GitHub push failed: "),
+                    html.Code(link_or_err)
+                ], style={"color": "#b00020"}))
 
-            # Record a tiny bit of metadata locally (optional)
-            meta_records.append({
-                "filename": filename,
-                "bytes": len(file_bytes),
-                "saved_local": str(local_path),
-                "pushed_repo_path": result.get("path"),
-                "commit_url": result.get("commit_url"),
-                "timestamp_utc": now,
-            })
         except Exception as e:
-            lines.append(f"✗ {filename}: {e}")
+            out.append(html.Div([
+                html.Strong(name or "file"),
+                html.Span(" — failed: "),
+                html.Code(str(e))
+            ], style={"color": "#b00020"}))
 
-    # Save metadata summary locally as JSON (also pushed to GitHub for traceability)
-    meta_json = json.dumps({"uploaded": meta_records}, indent=2)
-    meta_name = f"upload_manifest_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.json"
-    save_locally(meta_name, meta_json.encode("utf-8"))
-    push_file_to_github(meta_name, meta_json.encode("utf-8"))
-
-    return "\n".join(lines), f"Manifest contains {len(meta_records)} records. Latest: {meta_name}"
+    return out
 
 if __name__ == "__main__":
-    app.run_server(host="0.0.0.0", port=8050, debug=True)
+    app.run_server(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
