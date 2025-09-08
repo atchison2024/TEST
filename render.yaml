@@ -16,8 +16,8 @@ services:
       - key: GITHUB_TOKEN     # secret; Render will prompt you during first deploy
         sync: false
       - key: DISK_ROOT
-        value: /var/data
+        value: /data
     disk:
       name: data
-      mountPath: /var/data
+      mountPath: /data
       sizeGB: 5               # adjust as needed
