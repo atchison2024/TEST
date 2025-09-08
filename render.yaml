@@ -1,23 +1,19 @@
 services:
-  - type: web
-    name: dash-file-uploader
-    runtime: python
-    plan: starter             # persistent disks require a paid plan
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:server
-    # region: singapore       # optional; pick closest region if you like
-    envVars:
-      - key: TARGET_REPO
-        value: atchison2024/TEST
-      - key: TARGET_BRANCH
-        value: main
-      - key: GITHUB_BASEDIR
-        value: uploads
-      - key: GITHUB_TOKEN     # secret; Render will prompt you during first deploy
-        sync: false
-      - key: DISK_ROOT
-        value: /data
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 5               # adjust as needed
+- type: web
+name: dash-file-uploader
+env: python
+plan: free
+buildCommand: pip install -r requirements.txt
+startCommand: gunicorn app:server
+autoDeploy: true
+disk:
+name: uploads
+mountPath: /opt/render/project/src/uploads
+sizeGB: 1
+envVars:
+- key: MAX_UPLOAD_MB
+value: "25"
+- key: ALLOWED_EXTS
+value: "" # e.g. set to "pdf,png,jpg,docx" to restrict
+- key: UPLOAD_DIR
+value: "/opt/render/project/src/uploads"
