@@ -4,7 +4,7 @@ from dash import Dash, dcc, html, Input, Output, State, no_update
 
 # --- Config via env vars ---
 DISK_ROOT         = os.getenv("DISK_ROOT", "/data")             # must match render.yaml mountPath
-TARGET_REPO       = os.getenv("TARGET_REPO")                         # e.g. "your-user/your-repo"
+TARGET_REPO       = os.getenv("atchison2024/TEST")                         # e.g. "your-user/your-repo"
 TARGET_BRANCH     = os.getenv("TARGET_BRANCH", "main")
 GITHUB_BASEDIR    = os.getenv("GITHUB_BASEDIR", "uploads")           # path inside the repo
 GITHUB_TOKEN      = os.getenv("GITHUB_TOKEN")                        # PAT with repo/public_repo scope
