@@ -3,7 +3,7 @@ import os
 import requests
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-REPO = "your-username/your-repo"
+REPO = "atchison2024/TEST"
 BRANCH = "main"
 
 def upload_to_github(file_name, file_bytes):
