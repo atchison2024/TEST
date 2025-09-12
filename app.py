@@ -26,6 +26,8 @@ def upload_to_github(file_name, file_bytes):
     else:
         return f"❌ Error {file_name}: {response.json()}"
 
+app = Dash(__name__)
+server = app.server
 
 app.layout = html.Div([
     dcc.Upload(
