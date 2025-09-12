@@ -1,6 +1,8 @@
 import base64
 import os
 import requests
+from dash import Dash, dcc, html, Input, Output, State
+import base64
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO = "atchison2024/TEST"
@@ -23,3 +25,32 @@ def upload_to_github(file_name, file_bytes):
         return f"✅ Uploaded {file_name} to GitHub"
     else:
         return f"❌ Error: {response.json()}"
+
+
+app = Dash(__name__)
+server = app.server
+
+app.layout = html.Div([
+    dcc.Upload(
+        id="upload-data",
+        children=html.Div(["Drag and Drop or Select a File"]),
+        style={"width": "50%", "height": "60px", "border": "1px dashed black"},
+        multiple=False
+    ),
+    html.Div(id="output")
+])
+
+@app.callback(
+    Output("output", "children"),
+    Input("upload-data", "contents"),
+    State("upload-data", "filename"),
+)
+def save_file(contents, filename):
+    if contents:
+        content_type, content_string = contents.split(",")
+        file_bytes = base64.b64decode(content_string)
+        return upload_to_github(filename, file_bytes)
+    return "No file uploaded yet."
+
+if __name__ == "__main__":
+    app.run_server(debug=True)
