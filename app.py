@@ -65,7 +65,7 @@ def update_output(contents, filename):
     if contents is not None:
         content_type, content_string = contents.split(",")
         file_bytes = base64.b64decode(content_string)
-        return f"✅ Received file {filename}, size: {len(file_bytes)} bytes"
+        return upload_to_github(filename, file_bytes)
     return "No file uploaded yet"
 
 if __name__ == "__main__":
