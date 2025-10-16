@@ -21,9 +21,16 @@ def upload_to_github(file_name, file_bytes):
         file_bytes = file_bytes.encode("utf-8")
 
     content = base64.b64encode(file_bytes).decode("utf-8")
+    if isinstance(content, bytes):
+        encoded_content = base64.b64encode(content).decode("utf-8")
+    elif isinstance(content, str):
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+    else:
+        raise TypeError(f"'content' must be str or bytes, not {type(content).__name__}")
+    
     data = {
         "message": f"Upload {file_name}",
-        "content": content,
+        "content": encoded_content,
         "branch": BRANCH
     }
 
