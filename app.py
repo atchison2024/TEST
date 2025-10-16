@@ -2,6 +2,7 @@ import base64
 import os
 import requests
 from dash import Dash, dcc, html, Input, Output, State, ctx
+from dash.dependencies import ALL  # ← pattern-matching constant
 import json
 from datetime import datetime
 from urllib.parse import quote
@@ -11,8 +12,8 @@ import re
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO = "atchison2024/TEST"
 BRANCH = "main"
-UPLOAD_DIR = "uploads"  # repo subfolder
-MAX_FILE_SIZE_MB = 80   # guardrail (Contents API is unhappy with very large files)
+UPLOAD_DIR = "uploads"   # repo subfolder
+MAX_FILE_SIZE_MB = 80    # guardrail (Contents API dislikes very large files)
 
 # ---------- GitHub helpers ----------
 API_BASE = "https://api.github.com"
@@ -25,9 +26,8 @@ def _headers():
     }
 
 def _sanitize_filename(name: str) -> str:
-    # keep only the last path component; strip odd control chars
+    # Ensure no path traversal and keep a sensible charset
     name = os.path.basename(name)
-    # optionally restrict to a safe character set
     name = re.sub(r"[^\w.\-() ]+", "_", name)
     return name or f"file_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
 
@@ -37,29 +37,22 @@ def _get_file_sha_if_exists(path: str):
     if r.status_code == 200:
         data = r.json()
         return data.get("sha")
-    elif r.status_code in (404, 422):
+    if r.status_code in (404, 422):
         return None
-    else:
-        raise RuntimeError(f"Failed to check existing file: {r.status_code} {r.text}")
+    raise RuntimeError(f"Failed to check existing file: {r.status_code} {r.text}")
 
 def upload_to_github(file_name: str, file_bytes: bytes, commit_msg: str = None):
     safe_name = _sanitize_filename(file_name)
     repo_path = f"{UPLOAD_DIR}/{safe_name}"
 
-    # size check (optional but kind)
+    # size guard
     if len(file_bytes) > MAX_FILE_SIZE_MB * 1024 * 1024:
-        return {
-            "ok": False,
-            "file": safe_name,
-            "message": f"File too large for API upload (> {MAX_FILE_SIZE_MB} MB).",
-        }
+        return {"ok": False, "file": safe_name, "message": f"File too large (> {MAX_FILE_SIZE_MB} MB)."}
 
-    # single base64-encode of raw bytes (correct)
+    # single base64 of raw bytes (correct for Contents API)
     content_b64 = base64.b64encode(file_bytes).decode("utf-8")
 
-    # include sha if file already exists (required for updates)
     sha = _get_file_sha_if_exists(repo_path)
-
     url = f"{API_BASE}/repos/{REPO}/contents/{quote(repo_path)}"
     payload = {
         "message": commit_msg or f"Upload {safe_name}",
@@ -67,21 +60,18 @@ def upload_to_github(file_name: str, file_bytes: bytes, commit_msg: str = None):
         "branch": BRANCH,
     }
     if sha:
-        payload["sha"] = sha
+        payload["sha"] = sha  # required to update existing path
 
     r = requests.put(url, headers=_headers(), data=json.dumps(payload))
     if r.status_code in (200, 201):
         data = r.json()
-        # prefer the HTML URL of the created/updated file
         html_url = data.get("content", {}).get("html_url")
         return {"ok": True, "file": safe_name, "url": html_url}
-    else:
-        # bubble up API error body for visibility
-        try:
-            err = r.json()
-        except Exception:
-            err = r.text
-        return {"ok": False, "file": safe_name, "message": err}
+    try:
+        err = r.json()
+    except Exception:
+        err = r.text
+    return {"ok": False, "file": safe_name, "message": err}
 
 # ---------- Dash app ----------
 app = Dash(__name__)
@@ -122,13 +112,13 @@ def store_files(contents, filenames, stored_files):
     stored = dict(stored_files or {})
     if contents:
         for content, filename in zip(contents, filenames):
-            # dcc.Upload provides "data:<mime>;base64,<payload>"
+            # dcc.Upload gives "data:<mime>;base64,<payload>"
             try:
                 _, content_string = content.split(",", 1)
             except ValueError:
                 continue
             safe_name = _sanitize_filename(filename)
-            stored[safe_name] = content_string  # base64 content string
+            stored[safe_name] = content_string  # base64 payload string
 
     file_items = [
         html.Li([
@@ -144,18 +134,19 @@ def store_files(contents, filenames, stored_files):
     ]
     return stored, file_items
 
-# Handle file deletion
+# Handle file deletion (pattern matching: ALL)
 @app.callback(
     Output("stored-files", "data", allow_duplicate=True),
     Output("file-list", "children", allow_duplicate=True),
-    Input({"type": "delete-btn", "index": str}, "n_clicks"),
+    Input({"type": "delete-btn", "index": ALL}, "n_clicks"),
     State("stored-files", "data"),
     prevent_initial_call=True
 )
-def delete_file(n_clicks, stored_files):
+def delete_file(_n_clicks_list, stored_files):
     stored = dict(stored_files or {})
+
+    # If no button specifically triggered, rebuild current list
     if not ctx.triggered_id:
-        # No action; return current list
         file_items = [
             html.Li([
                 f"{f} ",
@@ -164,7 +155,7 @@ def delete_file(n_clicks, stored_files):
         ]
         return stored, file_items
 
-    fname = ctx.triggered_id.get("index")
+    fname = ctx.triggered_id.get("index")  # {"type":"delete-btn","index":"filename"}
     if fname in stored:
         stored.pop(fname, None)
 
@@ -206,7 +197,7 @@ def submit_files(n_clicks, stored_files):
         else:
             results.append(html.Li([f"❌ {fname}: {out.get('message')}"]))
 
-    # Clear the queue after submission
+    # Clear queue after submission
     return html.Ul(results), {}, []
 
 if __name__ == "__main__":
