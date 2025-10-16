@@ -2,7 +2,7 @@ import base64
 import os
 import requests
 from dash import Dash, dcc, html, Input, Output, State, ctx
-from dash.dependencies import ALL  # ← pattern-matching constant
+from dash.dependencies import ALL  # pattern-matching for dynamic components
 import json
 from datetime import datetime
 from urllib.parse import quote
@@ -145,7 +145,7 @@ def store_files(contents, filenames, stored_files):
 def delete_file(_n_clicks_list, stored_files):
     stored = dict(stored_files or {})
 
-    # If no button specifically triggered, rebuild current list
+    # If no specific delete button was clicked, just rebuild the current list (do NOT clear it)
     if not ctx.triggered_id:
         file_items = [
             html.Li([
@@ -155,6 +155,7 @@ def delete_file(_n_clicks_list, stored_files):
         ]
         return stored, file_items
 
+    # A specific delete button was clicked
     fname = ctx.triggered_id.get("index")  # {"type":"delete-btn","index":"filename"}
     if fname in stored:
         stored.pop(fname, None)
