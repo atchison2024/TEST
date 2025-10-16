@@ -134,6 +134,15 @@ def store_files(contents, filenames, stored_files):
     ]
     return stored, file_items
 
+def _render_file_list(stored):
+    return [
+        html.Li([
+            f"{f} ",
+            html.Button("Delete", id={"type": "delete-btn", "index": f}, n_clicks=0, style={"marginLeft": "10px"})
+        ])
+        for f in stored.keys()
+    ]
+
 # Handle file deletion (pattern matching: ALL)
 @app.callback(
     Output("stored-files", "data", allow_duplicate=True),
@@ -142,32 +151,22 @@ def store_files(contents, filenames, stored_files):
     State("stored-files", "data"),
     prevent_initial_call=True
 )
-def delete_file(_n_clicks_list, stored_files):
+def delete_file(n_clicks_list, stored_files):
     stored = dict(stored_files or {})
 
-    # If no specific delete button was clicked, just rebuild the current list (do NOT clear it)
-    if not ctx.triggered_id:
-        file_items = [
-            html.Li([
-                f"{f} ",
-                html.Button("Delete", id={"type": "delete-btn", "index": f}, n_clicks=0, style={"marginLeft": "10px"})
-            ]) for f in stored.keys()
-        ]
-        return stored, file_items
+    # ---- CRITICAL GUARD ----
+    # When buttons are created, this callback fires with n_clicks all 0.
+    # Ignore unless a real click happened.
+    if not n_clicks_list or all((x or 0) == 0 for x in n_clicks_list):
+        return stored, _render_file_list(stored)
+    # ------------------------
 
-    # A specific delete button was clicked
-    fname = ctx.triggered_id.get("index")  # {"type":"delete-btn","index":"filename"}
-    if fname in stored:
+    # A specific delete button was clicked (n_clicks > 0)
+    fname = ctx.triggered_id.get("index") if ctx.triggered_id else None
+    if fname and fname in stored:
         stored.pop(fname, None)
 
-    file_items = [
-        html.Li([
-            f"{f} ",
-            html.Button("Delete", id={"type": "delete-btn", "index": f}, n_clicks=0, style={"marginLeft": "10px"})
-        ])
-        for f in stored.keys()
-    ]
-    return stored, file_items
+    return stored, _render_file_list(stored)
 
 # Submit files to GitHub
 @app.callback(
